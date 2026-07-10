@@ -28,6 +28,7 @@ import type {
   GeminiAccountQuotaResponse,
   ModelCatalogEntry,
   ProviderAccount,
+  ProviderAccountDetailsResponse,
   ProviderModelRoute,
   ProviderPreset,
   RequestLog,
@@ -215,11 +216,13 @@ function App() {
   const [createRouteForm, setCreateRouteForm] = useState<ProviderRouteForm>(emptyRouteForm);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [clientSetupApiKey, setClientSetupApiKey] = useState("");
-  const [geminiDetailsAccount, setGeminiDetailsAccount] = useState<ProviderAccount | null>(null);
+  const [accountDetailsAccount, setAccountDetailsAccount] = useState<ProviderAccount | null>(null);
+  const [accountDetails, setAccountDetails] = useState<ProviderAccountDetailsResponse | null>(null);
   const [geminiModels, setGeminiModels] = useState<GeminiAccountModelsResponse | null>(null);
   const [geminiQuota, setGeminiQuota] = useState<GeminiAccountQuotaResponse | null>(null);
-  const [isGeminiDetailsLoading, setIsGeminiDetailsLoading] = useState(false);
   const [geminiDetailsError, setGeminiDetailsError] = useState<string | null>(null);
+  const [isAccountDetailsLoading, setIsAccountDetailsLoading] = useState(false);
+  const [accountDetailsError, setAccountDetailsError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!getStoredToken()) {
@@ -400,25 +403,38 @@ function App() {
     });
   }
 
-  async function inspectGeminiAccount(account: ProviderAccount) {
-    setGeminiDetailsAccount(account);
+  async function inspectProviderAccount(account: ProviderAccount) {
+    setAccountDetailsAccount(account);
+    setAccountDetails(null);
     setGeminiModels(null);
     setGeminiQuota(null);
     setGeminiDetailsError(null);
-    setIsGeminiDetailsLoading(true);
+    setAccountDetailsError(null);
+    setIsAccountDetailsLoading(true);
     try {
-      const [models, quota] = await Promise.all([
-        api.geminiAccountModels(account.id),
-        api.geminiAccountQuota(account.id),
-      ]);
-      setGeminiModels(models);
-      setGeminiQuota(quota);
+      const details = await api.providerAccountDetails(account.id);
+      setAccountDetails(details);
+      if (isGeminiAccount(account)) {
+        try {
+          const [models, quota] = await Promise.all([
+            api.geminiAccountModels(account.id),
+            api.geminiAccountQuota(account.id),
+          ]);
+          setGeminiModels(models);
+          setGeminiQuota(quota);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Unable to load Gemini account data";
+          setGeminiDetailsError(message);
+          toast.error(message);
+        }
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load Gemini account data";
-      setGeminiDetailsError(message);
+      const message = error instanceof Error ? error.message : "Unable to load provider account";
+      setAccountDetailsError(message);
       toast.error(message);
     } finally {
-      setIsGeminiDetailsLoading(false);
+      setIsAccountDetailsLoading(false);
     }
   }
 
@@ -657,7 +673,7 @@ function App() {
                       routes={modelRoutes}
                       onCreate={() => setIsAccountSheetOpen(true)}
                       onToggle={toggleAccount}
-                      onInspectGemini={inspectGeminiAccount}
+                      onInspectAccount={inspectProviderAccount}
                       onReconnectAntigravity={reconnectAntigravityAccount}
                     />
                   ) : null}
@@ -758,13 +774,24 @@ function App() {
           </div>
         </DialogContent>
       </Dialog>
-      <GeminiAccountDialog
-        account={geminiDetailsAccount}
-        models={geminiModels}
-        quota={geminiQuota}
-        loading={isGeminiDetailsLoading}
-        error={geminiDetailsError}
-        onOpenChange={(open) => !open && setGeminiDetailsAccount(null)}
+      <AccountDetailsDialog
+        account={accountDetailsAccount}
+        details={accountDetails}
+        geminiModels={geminiModels}
+        geminiQuota={geminiQuota}
+        geminiError={geminiDetailsError}
+        loading={isAccountDetailsLoading}
+        error={accountDetailsError}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAccountDetailsAccount(null);
+            setAccountDetails(null);
+            setGeminiModels(null);
+            setGeminiQuota(null);
+            setGeminiDetailsError(null);
+            setAccountDetailsError(null);
+          }
+        }}
       />
       <Toaster />
     </TooltipProvider>
@@ -1043,14 +1070,14 @@ function AccountsView({
   routes,
   onCreate,
   onToggle,
-  onInspectGemini,
+  onInspectAccount,
   onReconnectAntigravity,
 }: {
   accounts: ProviderAccount[];
   routes: ProviderModelRoute[];
   onCreate: () => void;
   onToggle: (account: ProviderAccount) => void;
-  onInspectGemini: (account: ProviderAccount) => void;
+  onInspectAccount: (account: ProviderAccount) => void;
   onReconnectAntigravity: (account: ProviderAccount) => void;
 }) {
   return (
@@ -1090,22 +1117,20 @@ function AccountsView({
                   <TableCell>{statusBadge(account.status, account.isActive)}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
-                      {isGeminiAccount(account) ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              aria-label="Models and quota"
-                              onClick={() => onInspectGemini(account)}
-                            >
-                              <GaugeIcon />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Models and quota</TooltipContent>
-                        </Tooltip>
-                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            aria-label="Account details"
+                            onClick={() => onInspectAccount(account)}
+                          >
+                            <GaugeIcon />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Account details</TooltipContent>
+                      </Tooltip>
                       {isGeminiAccount(account) ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -1172,17 +1197,15 @@ function AccountsView({
                     {routeCountForAccount(routes, account.id)} routes
                   </span>
                   <div className="flex items-center gap-2">
-                    {isGeminiAccount(account) ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon-sm"
-                        aria-label="Models and quota"
-                        onClick={() => onInspectGemini(account)}
-                      >
-                        <GaugeIcon />
-                      </Button>
-                    ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Account details"
+                      onClick={() => onInspectAccount(account)}
+                    >
+                      <GaugeIcon />
+                    </Button>
                     {isGeminiAccount(account) ? (
                       <Button
                         type="button"
@@ -1213,20 +1236,234 @@ function AccountsView({
   );
 }
 
-function GeminiAccountDialog({
+function AccountDetailsDialog({
   account,
-  models,
-  quota,
+  details,
+  geminiModels,
+  geminiQuota,
+  geminiError,
   loading,
   error,
   onOpenChange,
 }: {
   account: ProviderAccount | null;
-  models: GeminiAccountModelsResponse | null;
-  quota: GeminiAccountQuotaResponse | null;
+  details: ProviderAccountDetailsResponse | null;
+  geminiModels: GeminiAccountModelsResponse | null;
+  geminiQuota: GeminiAccountQuotaResponse | null;
+  geminiError: string | null;
   loading: boolean;
   error: string | null;
   onOpenChange: (open: boolean) => void;
+}) {
+  const resolvedAccount = details?.account ?? account;
+
+  return (
+    <Dialog open={Boolean(account)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[86svh] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>{resolvedAccount?.name || "Provider account"}</DialogTitle>
+          <DialogDescription>
+            Usage, routing health, recent requests, and provider data.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <div className="grid gap-3">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-32" />
+            <Skeleton className="h-52" />
+          </div>
+        ) : error ? (
+          <Alert variant="destructive">
+            <ActivityIcon className="size-4" />
+            <AlertTitle>Unable to load account data</AlertTitle>
+            <AlertDescription className="break-words">{error}</AlertDescription>
+          </Alert>
+        ) : details ? (
+          <div className="flex min-w-0 flex-col gap-5">
+            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <SettingRow label="Provider" value={details.account.provider} />
+              <SettingRow label="Protocol" value={wireApiLabel(details.account.wireApi)} />
+              <SettingRow label="Auth" value={details.account.authMode} />
+              <SettingRow label="Status" value={details.account.status} />
+              <SettingRow label="Base URL" value={details.account.baseUrl} />
+              <SettingRow label="Priority" value={String(details.account.priority)} />
+              <SettingRow label="Created" value={formatDate(details.account.createdAt)} />
+              <SettingRow label="Last used" value={formatDate(details.account.lastUsedAt)} />
+            </section>
+
+            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <AccountMetric
+                label="Requests today"
+                value={formatNumber(details.usage.requestsToday)}
+                detail={`${formatNumber(details.usage.totalRequests)} total`}
+              />
+              <AccountMetric
+                label="Tokens today"
+                value={formatNumber(details.usage.tokensToday)}
+                detail={`${formatNumber(details.usage.totalTokens)} total`}
+              />
+              <AccountMetric
+                label="Cost today"
+                value={formatCost(details.usage.estimatedCostToday)}
+                detail={`${formatCost(details.usage.totalCost)} total`}
+              />
+              <AccountMetric
+                label="Average latency"
+                value={formatLatency(details.usage.averageLatencyMs)}
+                detail={`${formatNumber(details.usage.successfulRequests)} successful`}
+              />
+              <AccountMetric
+                label="Failed requests"
+                value={formatNumber(details.usage.failedRequests)}
+                detail={`${formatNumber(details.usage.rateLimitedRequests)} rate limited`}
+              />
+              <AccountMetric
+                label="Auth errors"
+                value={formatNumber(details.usage.authErrorRequests)}
+                detail="401 and 403 responses"
+              />
+              <AccountMetric
+                label="Last success"
+                value={formatDate(details.usage.lastSuccessAt)}
+                detail="latest 2xx or 3xx"
+              />
+              <AccountMetric
+                label="Last error"
+                value={formatDate(details.usage.lastErrorAt)}
+                detail="latest 4xx or 5xx"
+              />
+            </section>
+
+            <section className="flex min-w-0 flex-col gap-2">
+              <div className="text-sm font-medium">Routes</div>
+              <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Public model</TableHead>
+                      <TableHead>Upstream model</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Last used</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {details.routes.map((route) => (
+                      <TableRow key={route.id}>
+                        <TableCell className="font-mono text-xs">{route.publicModelId}</TableCell>
+                        <TableCell className="font-mono text-xs">{route.upstreamModelId}</TableCell>
+                        <TableCell>{routeRoleBadge(route.role)}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            {statusBadge(route.status, route.enabled)}
+                            {route.cooldownUntil ? (
+                              <span className="text-xs text-muted-foreground">
+                                until {formatDate(route.cooldownUntil)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>{formatDate(route.lastUsedAt)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {details.routes.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5}>
+                          <EmptyNotice
+                            title="No provider routes"
+                            body="Routes appear here after this account is bound to a model."
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </div>
+            </section>
+
+            <section className="flex min-w-0 flex-col gap-2">
+              <div className="text-sm font-medium">Recent requests</div>
+              <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Model</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Latency</TableHead>
+                      <TableHead>Tokens</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {details.recentRequests.map((log) => (
+                      <TableRow key={log.id}>
+                        <TableCell>{formatDate(log.createdAt)}</TableCell>
+                        <TableCell>{formatLogModel(log)}</TableCell>
+                        <TableCell>{statusCodeBadge(log.statusCode)}</TableCell>
+                        <TableCell>{log.latencyMs}ms</TableCell>
+                        <TableCell>{formatNumber(log.inputTokens + log.outputTokens)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {details.recentRequests.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5}>
+                          <EmptyNotice
+                            title="No account traffic"
+                            body="Requests appear here after this account handles relay traffic."
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </div>
+            </section>
+
+            <section className="flex min-w-0 flex-col gap-2">
+              <div className="text-sm font-medium">Provider details</div>
+              {isGeminiAccount(details.account) ? (
+                <GeminiAccountSection
+                  account={details.account}
+                  models={geminiModels}
+                  quota={geminiQuota}
+                  error={geminiError}
+                />
+              ) : (
+                <EmptyNotice
+                  title="No provider-specific data"
+                  body="This account only has local usage and routing data."
+                />
+              )}
+            </section>
+          </div>
+        ) : (
+          <EmptyNotice title="No account selected" body="Select a provider account to inspect." />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AccountMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1 rounded-md border p-3">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="truncate text-sm font-semibold">{value}</span>
+      <span className="truncate text-xs text-muted-foreground">{detail}</span>
+    </div>
+  );
+}
+
+function GeminiAccountSection({
+  account,
+  models,
+  quota,
+  error,
+}: {
+  account: ProviderAccount;
+  models: GeminiAccountModelsResponse | null;
+  quota: GeminiAccountQuotaResponse | null;
+  error: string | null;
 }) {
   const rows = useMemo(() => {
     const entries = new Map<string, { id: string; displayName: string }>();
@@ -1263,154 +1500,149 @@ function GeminiAccountDialog({
   }, [quota]);
 
   return (
-    <Dialog open={Boolean(account)} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86svh] overflow-y-auto sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>{account?.name || "Gemini account"}</DialogTitle>
-          <DialogDescription>Models and quota reported by this Google account.</DialogDescription>
-        </DialogHeader>
-        {loading ? (
-          <div className="grid gap-3">
-            <Skeleton className="h-16" />
-            <Skeleton className="h-52" />
+    <div className="flex min-w-0 flex-col gap-4">
+      {error ? (
+        <Alert variant="destructive">
+          <ActivityIcon className="size-4" />
+          <AlertTitle>Gemini data unavailable</AlertTitle>
+          <AlertDescription className="break-words">{error}</AlertDescription>
+        </Alert>
+      ) : !models && !quota ? (
+        <Alert>
+          <ActivityIcon className="size-4" />
+          <AlertTitle>No Gemini data returned</AlertTitle>
+          <AlertDescription>
+            Google did not return models or quota for this account.
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <SettingRow label="Project" value={quota?.project || models?.project || "unknown"} />
+            <SettingRow label="Auth" value={quota?.authMode || account.authMode || "unknown"} />
+            <SettingRow label="Tier" value={formatGeminiTier(quota?.currentTier)} />
+            <SettingRow label="Quota source" value={quota?.quotaSource || "unknown"} />
           </div>
-        ) : error ? (
-          <Alert variant="destructive">
-            <ActivityIcon className="size-4" />
-            <AlertTitle>Unable to load account data</AlertTitle>
-            <AlertDescription className="break-words">{error}</AlertDescription>
-          </Alert>
-        ) : (
-          <div className="flex min-w-0 flex-col gap-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <SettingRow label="Project" value={quota?.project || models?.project || "unknown"} />
-              <SettingRow label="Auth" value={quota?.authMode || account?.authMode || "unknown"} />
-              <SettingRow label="Tier" value={formatGeminiTier(quota?.currentTier)} />
-              <SettingRow label="Quota source" value={quota?.quotaSource || "unknown"} />
-            </div>
-            {quota?.paidTier ? (
-              <Alert>
-                <ShieldCheckIcon className="size-4" />
-                <AlertTitle>{quota.paidTier.name || quota.paidTier.id}</AlertTitle>
-                <AlertDescription>{quota.paidTier.description}</AlertDescription>
-              </Alert>
-            ) : null}
-            {quota?.quotaSummaryError ? (
-              <Alert>
-                <ActivityIcon className="size-4" />
-                <AlertTitle>Quota summary unavailable</AlertTitle>
-                <AlertDescription className="break-words">
-                  {quota.quotaSummaryError}
-                </AlertDescription>
-              </Alert>
-            ) : null}
-            {quotaSummaryRows.length > 0 ? (
-              <div className="flex flex-col gap-2">
-                <div className="text-sm font-medium">Usage windows</div>
-                <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Model group</TableHead>
-                        <TableHead>Window</TableHead>
-                        <TableHead className="min-w-48">Remaining</TableHead>
-                        <TableHead>Reset</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {quotaSummaryRows.map(({ group, groupDescription, bucket }) => {
-                        const percent = quotaPercent(bucket.remainingFraction);
-                        return (
-                          <TableRow key={`${group}:${bucket.bucketId}`}>
-                            <TableCell>
-                              <div className="font-medium">{group}</div>
-                              {groupDescription ? (
-                                <div className="max-w-72 text-xs text-muted-foreground">
-                                  {groupDescription}
-                                </div>
-                              ) : null}
-                            </TableCell>
-                            <TableCell>
-                              <div>{bucket.displayName || bucket.bucketId}</div>
-                              {bucket.description ? (
-                                <div className="max-w-80 text-xs text-muted-foreground">
-                                  {bucket.description}
-                                </div>
-                              ) : null}
-                            </TableCell>
-                            <TableCell>
-                              {percent === undefined ? (
-                                <span className="text-xs text-muted-foreground">unknown</span>
-                              ) : (
-                                <div className="flex min-w-40 items-center gap-3">
-                                  <Progress value={percent} className="min-w-24" />
-                                  <span className="w-16 text-right font-mono text-xs">
-                                    {formatQuotaPercent(percent)}
-                                  </span>
-                                </div>
-                              )}
-                            </TableCell>
-                            <TableCell>{formatDate(bucket.resetTime)}</TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            ) : null}
-            <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Model ID</TableHead>
-                    <TableHead className="min-w-48">Remaining</TableHead>
-                    <TableHead>Reset</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((model) => {
-                    const modelQuota = quotaByModel.get(model.id);
-                    const remaining = modelQuota?.remainingFraction;
-                    const percent = quotaPercent(remaining);
-                    return (
-                      <TableRow key={model.id}>
-                        <TableCell className="font-medium">{model.displayName}</TableCell>
-                        <TableCell className="font-mono text-xs">{model.id}</TableCell>
-                        <TableCell>
-                          {percent === undefined ? (
-                            <span className="text-xs text-muted-foreground">unknown</span>
-                          ) : (
-                            <div className="flex min-w-40 items-center gap-3">
-                              <Progress value={percent} className="min-w-24" />
-                              <span className="w-14 text-right font-mono text-xs">
-                                {percent.toFixed(1)}%
-                              </span>
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell>{formatDate(modelQuota?.resetTime)}</TableCell>
-                      </TableRow>
-                    );
-                  })}
-                  {rows.length === 0 ? (
+          {quota?.paidTier ? (
+            <Alert>
+              <ShieldCheckIcon className="size-4" />
+              <AlertTitle>{quota.paidTier.name || quota.paidTier.id}</AlertTitle>
+              <AlertDescription>{quota.paidTier.description}</AlertDescription>
+            </Alert>
+          ) : null}
+          {quota?.quotaSummaryError ? (
+            <Alert>
+              <ActivityIcon className="size-4" />
+              <AlertTitle>Quota summary unavailable</AlertTitle>
+              <AlertDescription className="break-words">{quota.quotaSummaryError}</AlertDescription>
+            </Alert>
+          ) : null}
+          {quotaSummaryRows.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <div className="text-sm font-medium">Usage windows</div>
+              <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
                     <TableRow>
-                      <TableCell colSpan={4}>
-                        <EmptyNotice
-                          title="No account models returned"
-                          body="Google did not return models for this credential."
-                        />
-                      </TableCell>
+                      <TableHead>Model group</TableHead>
+                      <TableHead>Window</TableHead>
+                      <TableHead className="min-w-48">Remaining</TableHead>
+                      <TableHead>Reset</TableHead>
                     </TableRow>
-                  ) : null}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {quotaSummaryRows.map(({ group, groupDescription, bucket }) => {
+                      const percent = quotaPercent(bucket.remainingFraction);
+                      return (
+                        <TableRow key={`${group}:${bucket.bucketId}`}>
+                          <TableCell>
+                            <div className="font-medium">{group}</div>
+                            {groupDescription ? (
+                              <div className="max-w-72 text-xs text-muted-foreground">
+                                {groupDescription}
+                              </div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>
+                            <div>{bucket.displayName || bucket.bucketId}</div>
+                            {bucket.description ? (
+                              <div className="max-w-80 text-xs text-muted-foreground">
+                                {bucket.description}
+                              </div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>
+                            {percent === undefined ? (
+                              <span className="text-xs text-muted-foreground">unknown</span>
+                            ) : (
+                              <div className="flex min-w-40 items-center gap-3">
+                                <Progress value={percent} className="min-w-24" />
+                                <span className="w-16 text-right font-mono text-xs">
+                                  {formatQuotaPercent(percent)}
+                                </span>
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell>{formatDate(bucket.resetTime)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
+          ) : null}
+          <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Model</TableHead>
+                  <TableHead>Model ID</TableHead>
+                  <TableHead className="min-w-48">Remaining</TableHead>
+                  <TableHead>Reset</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((model) => {
+                  const modelQuota = quotaByModel.get(model.id);
+                  const remaining = modelQuota?.remainingFraction;
+                  const percent = quotaPercent(remaining);
+                  return (
+                    <TableRow key={model.id}>
+                      <TableCell className="font-medium">{model.displayName}</TableCell>
+                      <TableCell className="font-mono text-xs">{model.id}</TableCell>
+                      <TableCell>
+                        {percent === undefined ? (
+                          <span className="text-xs text-muted-foreground">unknown</span>
+                        ) : (
+                          <div className="flex min-w-40 items-center gap-3">
+                            <Progress value={percent} className="min-w-24" />
+                            <span className="w-14 text-right font-mono text-xs">
+                              {percent.toFixed(1)}%
+                            </span>
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>{formatDate(modelQuota?.resetTime)}</TableCell>
+                    </TableRow>
+                  );
+                })}
+                {rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <EmptyNotice
+                        title="No account models returned"
+                        body="Google did not return models for this credential."
+                      />
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
           </div>
-        )}
-      </DialogContent>
-    </Dialog>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -3144,6 +3376,18 @@ function numberFromInput(value: string) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function formatCost(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value > 0 && value < 1 ? 4 : 2,
+  }).format(value);
+}
+
+function formatLatency(value: number | null | undefined) {
+  return value == null ? "n/a" : `${Math.round(value)}ms`;
 }
 
 function formatGeminiTier(tier: GeminiAccountQuotaResponse["currentTier"]) {

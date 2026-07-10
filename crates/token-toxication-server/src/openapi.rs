@@ -11,7 +11,8 @@ use crate::models::{
     GeminiAccountQuotaSummary, GeminiAccountTier, GeminiModel, GeminiModelListResponse,
     HealthResponse, LoginRequest, LoginResponse, MetricsResponse, ModelCatalogEntry,
     ModelCatalogEntryResponse, ModelCatalogListResponse, OpenAiModel, OpenAiModelListResponse,
-    ProviderAccount, ProviderAccountListResponse, ProviderAccountResponse, ProviderModelRoute,
+    ProviderAccount, ProviderAccountDetailsResponse, ProviderAccountListResponse,
+    ProviderAccountResponse, ProviderAccountUsage, ProviderModelRoute,
     ProviderModelRouteListResponse, ProviderModelRouteResponse, ProviderPreset,
     ProviderPresetListResponse, RequestLog, RequestLogListResponse, RequestSummary,
     UpdateApiKeyRequest, UpdateModelCatalogEntryRequest, UpdateProviderAccountRequest,
@@ -38,6 +39,7 @@ use crate::models::{
         update_api_key,
         delete_api_key,
         list_provider_accounts,
+        get_provider_account_details,
         list_provider_presets,
         create_provider_account,
         update_provider_account,
@@ -103,8 +105,10 @@ use crate::models::{
         OpenAiModel,
         OpenAiModelListResponse,
         ProviderAccount,
+        ProviderAccountDetailsResponse,
         ProviderAccountListResponse,
         ProviderAccountResponse,
+        ProviderAccountUsage,
         ProviderModelRoute,
         ProviderModelRouteListResponse,
         ProviderModelRouteResponse,
@@ -281,6 +285,18 @@ pub fn update_provider_account() {}
     ),
 )]
 pub fn delete_provider_account() {}
+
+#[utoipa::path(
+    get,
+    path = "/admin/api/provider-accounts/{id}/details",
+    tag = "Admin",
+    params(("id" = String, Path, description = "Provider account id")),
+    responses(
+        (status = 200, description = "Provider account usage, routes, and recent requests", body = ProviderAccountDetailsResponse),
+        (status = 404, description = "Provider account not found", body = ErrorResponse),
+    ),
+)]
+pub fn get_provider_account_details() {}
 
 #[utoipa::path(
     post,

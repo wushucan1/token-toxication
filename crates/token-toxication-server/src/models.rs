@@ -206,6 +206,33 @@ pub struct ProviderAccountResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderAccountUsage {
+    pub requests_today: u64,
+    pub tokens_today: u64,
+    pub estimated_cost_today: f64,
+    pub total_requests: u64,
+    pub total_tokens: u64,
+    pub total_cost: f64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub rate_limited_requests: u64,
+    pub auth_error_requests: u64,
+    pub average_latency_ms: Option<f64>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_error_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccountDetailsResponse {
+    pub account: ProviderAccount,
+    pub usage: ProviderAccountUsage,
+    pub routes: Vec<ProviderModelRoute>,
+    pub recent_requests: Vec<RequestLog>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AntigravityOAuthStartRequest {
     pub account_id: Option<String>,
     #[serde(default)]

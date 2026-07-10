@@ -43,10 +43,11 @@ use crate::{
         GeminiAccountModelsResponse, GeminiAccountQuotaResponse, GeminiModel,
         GeminiModelListResponse, HealthResponse, MetricsResponse, ModelCatalogEntryResponse,
         ModelCatalogListResponse, OpenAiModel, OpenAiModelListResponse,
-        ProviderAccountListResponse, ProviderAccountResponse, ProviderModelRouteListResponse,
-        ProviderModelRouteResponse, ProviderPresetListResponse, RequestLog, RequestLogListResponse,
-        RequestSummary, UpdateApiKeyRequest, UpdateModelCatalogEntryRequest,
-        UpdateProviderAccountRequest, UpdateProviderModelRouteRequest,
+        ProviderAccountDetailsResponse, ProviderAccountListResponse, ProviderAccountResponse,
+        ProviderModelRouteListResponse, ProviderModelRouteResponse, ProviderPresetListResponse,
+        RequestLog, RequestLogListResponse, RequestSummary, UpdateApiKeyRequest,
+        UpdateModelCatalogEntryRequest, UpdateProviderAccountRequest,
+        UpdateProviderModelRouteRequest,
     },
     provider_catalog::provider_presets,
     routing::{RouteFailure, classify_response_failure, classify_transport_failure},
@@ -71,6 +72,10 @@ pub fn admin_routes(state: AppState) -> Router<AppState> {
         .route(
             "/provider-accounts/{id}",
             patch(update_provider_account).delete(delete_provider_account),
+        )
+        .route(
+            "/provider-accounts/{id}/details",
+            get(get_provider_account_details),
         )
         .route(
             "/provider-accounts/{id}/gemini/models",
@@ -1042,6 +1047,18 @@ pub async fn list_provider_accounts(
     Ok(Json(ProviderAccountListResponse {
         data: state.db.list_provider_accounts().await?,
     }))
+}
+
+pub async fn get_provider_account_details(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProviderAccountDetailsResponse>, AppError> {
+    let details = state
+        .db
+        .provider_account_details(&id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("provider account not found".into()))?;
+    Ok(Json(details))
 }
 
 pub async fn start_antigravity_oauth(

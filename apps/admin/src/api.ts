@@ -14,6 +14,7 @@ import type {
   LoginResponse,
   ModelCatalogEntry,
   ProviderAccount,
+  ProviderAccountDetailsResponse,
   ProviderModelRoute,
   ProviderPreset,
   RequestLog,
@@ -128,6 +129,11 @@ export const api = {
   async providerAccounts(): Promise<ProviderAccount[]> {
     const response = await callApi(adminApi.listProviderAccounts());
     return [...response.data];
+  },
+
+  async providerAccountDetails(id: string): Promise<ProviderAccountDetailsResponse> {
+    const response = await callApi(adminApi.getProviderAccountDetails({ id }));
+    return unwrapResult(response);
   },
 
   async providerPresets(): Promise<ProviderPreset[]> {

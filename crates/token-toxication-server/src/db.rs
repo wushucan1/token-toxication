@@ -10,9 +10,10 @@ use crate::{
     models::{
         ApiKeyRecord, ApiKeyView, CreateApiKeyRequest, CreateModelCatalogEntryRequest,
         CreateProviderAccountRequest, CreateProviderModelRouteRequest, Dashboard,
-        ModelCatalogEntry, ProviderAccount, ProviderAccountRecord, ProviderModelRoute, RequestLog,
-        RequestSummary, UpdateApiKeyRequest, UpdateModelCatalogEntryRequest,
-        UpdateProviderAccountRequest, UpdateProviderModelRouteRequest, UsageSummary,
+        ModelCatalogEntry, ProviderAccount, ProviderAccountDetailsResponse, ProviderAccountRecord,
+        ProviderAccountUsage, ProviderModelRoute, RequestLog, RequestSummary, UpdateApiKeyRequest,
+        UpdateModelCatalogEntryRequest, UpdateProviderAccountRequest,
+        UpdateProviderModelRouteRequest, UsageSummary,
     },
     provider_catalog::{default_wire_api_for_provider, normalize_provider_alias},
 };
@@ -879,6 +880,32 @@ impl Db {
             .map(|record| record.map(|record| record.account))
     }
 
+    pub async fn provider_account_details(
+        &self,
+        id: &str,
+    ) -> Result<Option<ProviderAccountDetailsResponse>, rusqlite::Error> {
+        let conn = self.conn.lock().await;
+        let mut account_stmt = conn.prepare(
+            "SELECT id, name, provider, base_url, auth_mode, wire_api, api_key, is_active,
+                    priority, status, last_error, created_at, last_used_at
+             FROM provider_accounts WHERE id = ?1",
+        )?;
+        let account = account_stmt
+            .query_row(params![id], account_from_row)
+            .optional()?
+            .map(|record| record.account);
+        let Some(account) = account else {
+            return Ok(None);
+        };
+
+        Ok(Some(ProviderAccountDetailsResponse {
+            account,
+            usage: provider_account_usage(&conn, id, Utc::now().date_naive())?,
+            routes: provider_routes_for_account(&conn, id)?,
+            recent_requests: request_logs_for_account(&conn, id, 10)?,
+        }))
+    }
+
     pub async fn get_provider_account_record(
         &self,
         id: &str,
@@ -1087,6 +1114,90 @@ where
 {
     let rows = stmt.query_map(params, account_from_row)?;
     rows.map(|row| row.map(|record| record.account)).collect()
+}
+
+fn provider_routes_for_account(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<ProviderModelRoute>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, public_model_id, provider_account_id, upstream_model_id, wire_api,
+                role, enabled, status, last_error, last_status_code, cooldown_until,
+                last_used_at, strip_params, created_at
+         FROM provider_model_routes
+         WHERE provider_account_id = ?1
+         ORDER BY public_model_id ASC,
+                  CASE role WHEN 'primary' THEN 0 WHEN 'backup' THEN 1 ELSE 2 END,
+                  created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![account_id], provider_model_route_from_row)?;
+    rows.collect()
+}
+
+fn request_logs_for_account(
+    conn: &Connection,
+    account_id: &str,
+    limit: u32,
+) -> Result<Vec<RequestLog>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, api_key_id, provider_account_id, method, path, model, upstream_model,
+                upstream_url, request_summary, status_code, latency_ms, input_tokens,
+                output_tokens, cost_usd, created_at, error
+         FROM request_logs
+         WHERE provider_account_id = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![account_id, limit], request_log_from_row)?;
+    rows.collect()
+}
+
+fn provider_account_usage(
+    conn: &Connection,
+    account_id: &str,
+    today: NaiveDate,
+) -> Result<ProviderAccountUsage, rusqlite::Error> {
+    let today = today.to_string();
+    conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(input_tokens + output_tokens), 0),
+                COALESCE(SUM(cost_usd), 0.0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code IN (401, 403) THEN 1 ELSE 0 END), 0),
+                AVG(latency_ms),
+                MAX(CASE WHEN status_code >= 200 AND status_code < 400 THEN created_at END),
+                MAX(CASE WHEN status_code >= 400 THEN created_at END),
+                COALESCE(SUM(CASE WHEN created_at LIKE ?2 || '%' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at LIKE ?2 || '%' THEN input_tokens + output_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at LIKE ?2 || '%' THEN cost_usd ELSE 0 END), 0.0)
+         FROM request_logs
+         WHERE provider_account_id = ?1",
+        params![account_id, today],
+        |row| {
+            let total_requests = row.get::<_, i64>(0)? as u64;
+            Ok(ProviderAccountUsage {
+                total_requests,
+                total_tokens: row.get::<_, i64>(1)? as u64,
+                total_cost: row.get(2)?,
+                successful_requests: row.get::<_, i64>(3)? as u64,
+                failed_requests: row.get::<_, i64>(4)? as u64,
+                rate_limited_requests: row.get::<_, i64>(5)? as u64,
+                auth_error_requests: row.get::<_, i64>(6)? as u64,
+                average_latency_ms: if total_requests == 0 {
+                    None
+                } else {
+                    row.get(7)?
+                },
+                last_success_at: parse_time_opt(row.get::<_, Option<String>>(8)?.as_deref()),
+                last_error_at: parse_time_opt(row.get::<_, Option<String>>(9)?.as_deref()),
+                requests_today: row.get::<_, i64>(10)? as u64,
+                tokens_today: row.get::<_, i64>(11)? as u64,
+                estimated_cost_today: row.get(12)?,
+            })
+        },
+    )
 }
 
 fn api_key_from_row(row: &rusqlite::Row<'_>) -> Result<ApiKeyRecord, rusqlite::Error> {
@@ -1806,6 +1917,110 @@ mod tests {
         assert_eq!(models[0].display_name, "DeepSeek V4 Pro");
         assert_eq!(models[0].provider, "deepseek");
         assert_eq!(models[0].wire_api, "openai-chat");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn provider_account_details_summarizes_usage_routes_and_logs() {
+        let path =
+            std::env::temp_dir().join(format!("token-toxication-{}.sqlite3", Uuid::new_v4()));
+        let db = Db::open(&path).await.expect("open test database");
+        let account = db
+            .create_provider_account(CreateProviderAccountRequest {
+                name: "OpenAI".to_string(),
+                provider: "openai".to_string(),
+                base_url: "https://api.openai.com".to_string(),
+                auth_mode: "bearer".to_string(),
+                wire_api: "openai-responses".to_string(),
+                api_key: "openai-key".to_string(),
+                is_active: true,
+                priority: 0,
+            })
+            .await
+            .expect("create account");
+        db.create_model_catalog_entry(CreateModelCatalogEntryRequest {
+            id: "gpt-5.5".to_string(),
+            display_name: "GPT 5.5".to_string(),
+            family: "openai".to_string(),
+            enabled: true,
+        })
+        .await
+        .expect("create catalog model");
+        db.create_provider_model_route(CreateProviderModelRouteRequest {
+            public_model_id: "gpt-5.5".to_string(),
+            provider_account_id: account.id.clone(),
+            upstream_model_id: "gpt-5.5".to_string(),
+            wire_api: "openai-responses".to_string(),
+            role: "primary".to_string(),
+            enabled: true,
+            strip_params: Vec::new(),
+        })
+        .await
+        .expect("create route");
+
+        let now = Utc::now();
+        db.insert_request_log(RequestLog {
+            id: Uuid::new_v4().to_string(),
+            api_key_id: "relay-key".to_string(),
+            provider_account_id: Some(account.id.clone()),
+            method: "POST".to_string(),
+            path: "/openai/v1/responses".to_string(),
+            model: Some("gpt-5.5".to_string()),
+            upstream_model: Some("gpt-5.5".to_string()),
+            upstream_url: Some("https://api.openai.com/v1/responses".to_string()),
+            request_summary: None,
+            status_code: 200,
+            latency_ms: 100,
+            input_tokens: 10,
+            output_tokens: 20,
+            cost_usd: 0.03,
+            created_at: now,
+            error: None,
+        })
+        .await
+        .expect("insert success log");
+        db.insert_request_log(RequestLog {
+            id: Uuid::new_v4().to_string(),
+            api_key_id: "relay-key".to_string(),
+            provider_account_id: Some(account.id.clone()),
+            method: "POST".to_string(),
+            path: "/openai/v1/responses".to_string(),
+            model: Some("gpt-5.5".to_string()),
+            upstream_model: Some("gpt-5.5".to_string()),
+            upstream_url: Some("https://api.openai.com/v1/responses".to_string()),
+            request_summary: None,
+            status_code: 429,
+            latency_ms: 300,
+            input_tokens: 1,
+            output_tokens: 2,
+            cost_usd: 0.0,
+            created_at: now + chrono::Duration::seconds(1),
+            error: Some("rate limited".to_string()),
+        })
+        .await
+        .expect("insert error log");
+
+        let details = db
+            .provider_account_details(&account.id)
+            .await
+            .expect("load details")
+            .expect("details");
+
+        assert_eq!(details.account.id, account.id);
+        assert_eq!(details.routes.len(), 1);
+        assert_eq!(details.recent_requests.len(), 2);
+        assert_eq!(details.recent_requests[0].status_code, 429);
+        assert_eq!(details.usage.total_requests, 2);
+        assert_eq!(details.usage.requests_today, 2);
+        assert_eq!(details.usage.total_tokens, 33);
+        assert_eq!(details.usage.successful_requests, 1);
+        assert_eq!(details.usage.failed_requests, 1);
+        assert_eq!(details.usage.rate_limited_requests, 1);
+        assert_eq!(details.usage.auth_error_requests, 0);
+        assert_eq!(details.usage.average_latency_ms, Some(200.0));
+        assert!(details.usage.last_success_at.is_some());
+        assert!(details.usage.last_error_at.is_some());
 
         let _ = std::fs::remove_file(path);
     }

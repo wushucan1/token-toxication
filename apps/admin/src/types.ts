@@ -19,6 +19,8 @@ export type {
   LoginResponse,
   ModelCatalogEntry,
   ProviderAccount,
+  ProviderAccountDetailsResponse,
+  ProviderAccountUsage,
   ProviderModelRoute,
   ProviderPreset,
   RequestLog,
